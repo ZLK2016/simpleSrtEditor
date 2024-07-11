@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>simple SRT creator/editor</title>
+    <script src="./vue.global.js"></script>
+    <style>
+        *{padding:0;margin:0;box-sizing:border-box;}
+        html,body{width:100%;height:100%;}
+        video{background-color: black;width:100%;height:100%;}
+        table{width:100%;}
+        tr:hover{background-color:silver;}
+        td:nth-child(1){width: 8em; user-select:none;text-align:center;}
+        td:nth-child(2){width: 8em; user-select: none;text-align:center;}
+        td:nth-last-child(1){width:2em;text-align:center;}
+        input[type="text"]{width:100%;}
+        #app{width:100%;height:100%;display:flex;flex-flow:row nowrap;align-items:center;justify-content:center;}
+        #app>*{height:100%;width:50%;overflow-y:auto;position:relative;}
+        .operation{width:100%;display:flex;flex-flow:row nowrap;justify-content: space-between;}
+        .operation button{padding:0 0.5em;}
+        .player-tip{position:absolute;top:50%;left:50%;width:36em;height:10em;margin-left:-18em;margin-top:-5em;}
+        .player-tip{color:white;padding:3em;border:2px dotted silver;border-radius:1em; cursor:pointer;}
+        .player-tip:hover{background-color:#fff8;}
+        .subtitleview{position:absolute;bottom:3em;width:100%;text-align:center;color:white;text-shadow:1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;}
+        .subtitleview{width:100%;font-size:xx-large;}
+        .subtitleview:hover{background-color:#fff8;}
+    </style>
+    <script>
+        function time2str(t) {
+            const s = t;
+            const s2 = (t % 60).toFixed(3);
+            const m = Math.floor(s / 60);
+            const m2 = m % 60
+            const h = Math.floor(m / 60);
+            return `${h.toString().padStart(2,'0')}:${m2.toString().padStart(2,'0')}:${s2.toString().padStart(6,'0').replace('.', ',')}`;
+        }
+        function str2time(s) {
+            [t, ms] = s.toString().split(',');
+            [hr, min, sec] = t.split(':');
+            return parseInt(hr) * 3600 + parseInt(min) * 60 + parseInt(sec) + parseInt(ms) / 1000;
+        }
+        function exportSrt(subtitles) {
+            const str = subtitles.map(
+                (s, i) => `${i+1}\r\n${time2str(s.in)} --> ${time2str(s.out)}\r\n${s.text}\r\n`
+                ).join('\r\n');
+            const file = new Blob([str], { type: 'text/plain' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(file);
+            a.download = 'subtitle.srt';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+    </script>
+</head>
+<body>
+    <div id="app" @keydown="keydown">
+        <div style="display:none;">
+            <input ref="videoselector" type="file" name="videofile" id="openvideo" @input="videoselected" >
+            <input ref="srtselector" type="file" name="srtfile" id="opensrt" @input="srtselected">
+        </div>
+        <div>
+            <video ref="player" controls :src="vsrc" 
+                @timeupdate="newtime" 
+                @durationchange="durationchange"
+                ></video>
+            <div class="player-tip" @click="openvideo" v-if="!vsrc">
+                click here to open local video file...<br>
+                <strong>all</strong> data is on your computer, <strong>no</strong> data will be uploaded.<br>
+                supported video formats depends on your browser.
+            </div>
+            <div v-if="vsrc" class="subtitleview" v-html="current_subtitle"></div>
+        </div>
+        <div>
+            <table border="1">
+                <tr>
+                    <th>in</th>
+                    <th>out</th>
+                    <th>text</th>
+                    <th>*</th>
+                </tr>
+                <tr v-for="s in subtitles">
+                    <td @dblclick="set_in($event, s)">{{timestr(s.in)}}<button @click="goto(s.in)">go</button></td>
+                    <td @dblclick="set_out($event,s)">{{timestr(s.out)}}<button @click="goto(s.out)">go</button></td>
+                    <td><input type="text" v-model="s.text"></td>
+                    <td><button @click="remove(s)">x</button></td>
+                </tr>
+                <tr>
+                    <td colspan="4">
+                        <div class="operation">
+                            <button @click="opensrt">open srt...</button>
+                            <button @click="subtitles=[]">clear all</button>
+                            <button @click="add">+</button>
+                            <button @click="exportsubtitles">export srt...</button>
+                        </div>
+                    </td>
+                </tr>
+            </table>
+            <table>
+                <tr>
+                    <td><kbd>space</kbd></td><td>play/pause</td>
+                </tr>
+                <tr>
+                    <td><kbd>up</kbd>/<kbd>down</kbd></td><td>+5s/-5s</td>
+                </tr>
+                <tr>
+                    <td><kbd>left</kbd>/<kbd>right</kbd></td><td>-1s/+1s</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+</body>
+
+<script>
+    Vue.createApp({
+        data() {
+            return {
+                vsrc: null,
+                curtime: 0,
+                duration: 0,
+
+                subtitles: [
+                    {in: 0, out:10, text: 'test'},
+
+                ],
+            }
+        },
+        computed: {
+            current_subtitle() {
+                return this.subtitles.filter(s => {
+                    return s.in <= this.curtime && s.out > this.curtime
+                }).map(s => s.text).join('<br>');
+            }
+        },
+        methods: {
+            timestr(t) {
+                return time2str(t);
+            },
+            newtime(e) {
+                console.log(e.target.currentTime);
+                this.curtime = e.target.currentTime;
+            },
+            openvideo(e) {
+                if (!this.vsrc) {
+                    this.$refs.videoselector.click();
+                }
+            },
+            durationchange(e) {
+                this.duration = e.target.duration;
+            },
+            videoselected(e) {
+                const f = e.target.files[0];
+                if (f) {
+                    this.vsrc = URL.createObjectURL(f);
+                }
+            },
+            set_in(e, s) {
+                e.preventDefault();
+                s.in = this.curtime;
+            },
+            set_out(e, s) {
+                e.preventDefault();
+                s.out = this.curtime;
+            },
+            remove(s) {
+                this.subtitles = this.subtitles.filter(one => one !== s);
+            },
+            add() {
+                const lastone = this.subtitles[this.subtitles.length - 1];
+                if (lastone.out > this.curtime) {
+                    lastone.out = this.curtime;
+                }
+                this.subtitles.push({
+                    in: this.curtime,
+                    out: this.duration,
+                    text: ''
+                });
+            },
+            exportsubtitles() {
+                exportSrt(this.subtitles);
+            },
+            opensrt() {
+                this.$refs.srtselector.click();
+            },
+            srtselected(e) {
+                const f = e.target.files[0];
+                if (f) {
+                    const reader = new FileReader();
+                    reader.addEventListener('load', () => {
+                        const all = reader.result;
+                        this.subtitles = all.split('\r\n\r\n')
+                        .map(one => one.trim())
+                        .filter(one => one.length > 0)
+                        .map(one => {
+                            [id, tm, text] = one.split('\r\n');
+                            [tmin, tmout] = tm.split(' --> ');
+                            return {in: str2time(tmin), out: str2time(tmout), text}
+                        });
+                    });
+                    reader.readAsText(f);
+                }
+            },
+            goto(sec) {
+                this.$refs.player.currentTime = sec;
+            },
+            seek(sec) {
+                if (this.vsrc) {
+                    let tm = this.curtime + sec;
+                    if (tm < 0) {
+                        tm = 0;
+                    } else if (tm > this.duration) {
+                        tm = this.duration
+                    }
+                    this.$refs.player.currentTime = tm;
+                }
+            },
+            toggleplay() {
+                if (this.vsrc) {
+                    const player = this.$refs.player;
+                    if (player.paused) {
+                        player.play();
+                    } else {
+                        player.pause();
+                    }
+                }
+            },
+            keydown(e) {
+                e.preventDefault();
+                switch (e.code) {
+                    case 'ArrowUp':
+                        this.seek(5);
+                        break;
+                    case 'ArrowDown':
+                        this.seek(-5);
+                        break;
+                    case 'ArrowLeft':
+                        this.seek(-1);
+                        break;
+                    case 'ArrowRight':
+                        this.seek(1);
+                        break;
+                    case 'Space':
+                        this.toggleplay();
+                        break;
+                    default:
+                        console.log(e.code);
+                        break;
+                }
+            }
+        },
+        created() {
+            document.onkeydown = (e) => {
+                console.log(e.code);
+                if (e.target.nodeName.toLowerCase() !== 'input' && 
+                    ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)
+                ) {
+                    this.keydown(e);
+                }
+            }
+        }
+    }).mount('#app');
+</script>
+</html>
